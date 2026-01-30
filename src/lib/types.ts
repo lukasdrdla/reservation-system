@@ -6,8 +6,13 @@ export interface Tenant {
   phone: string | null;
   logo_url: string | null;
   primary_color: string;
+  category: TenantCategory;
+  category_data: RestaurantData | WellnessData | BarbershopData | FitnessData | null;
   created_at: string;
 }
+
+// Forward declaration for TenantCategory (defined below)
+export type TenantCategory = 'RESTAURANT' | 'WELLNESS_SPA' | 'BARBERSHOP' | 'FITNESS_SPORT';
 
 export interface Service {
   id: string;
@@ -68,4 +73,72 @@ export interface BookingFormData {
   customer_email: string;
   customer_phone: string;
   note?: string;
+  booking_data?: RestaurantBookingData | WellnessBookingData | BarbershopBookingData | FitnessBookingData;
 }
+
+// ==================== CATEGORY TYPES ====================
+
+// Category-specific data for Tenant
+export interface RestaurantData {
+  tableCount: number;
+  seatingCapacity: number;
+  cuisineType?: string;
+}
+
+export interface WellnessData {
+  roomCount: number;
+  procedureTypes: string[];
+  therapists?: Array<{ id: string; name: string }>;
+}
+
+export interface BarbershopData {
+  chairCount: number;
+  stylists: Array<{ id: string; name: string; specialties: string[] }>;
+}
+
+export interface FitnessData {
+  trainers: Array<{ id: string; name: string; specialties: string[] }>;
+  activityTypes: string[];
+  groupSizeLimit?: number;
+}
+
+// Category-specific data for Booking
+export interface RestaurantBookingData {
+  tableNumber: number;
+  personCount: number;
+  specialRequests?: string;
+}
+
+export interface WellnessBookingData {
+  procedureType: string;
+  roomNumber: string;
+  therapistName?: string;
+}
+
+export interface BarbershopBookingData {
+  stylistId: string;
+  stylistName: string;
+  serviceType: string;
+}
+
+export interface FitnessBookingData {
+  trainerId: string;
+  trainerName: string;
+  activityType: string;
+  participantCount?: number;
+}
+
+// Helper type for category data
+export type CategoryData<T extends TenantCategory> =
+  T extends 'RESTAURANT' ? RestaurantData :
+  T extends 'WELLNESS_SPA' ? WellnessData :
+  T extends 'BARBERSHOP' ? BarbershopData :
+  T extends 'FITNESS_SPORT' ? FitnessData :
+  never;
+
+export type BookingCategoryData<T extends TenantCategory> =
+  T extends 'RESTAURANT' ? RestaurantBookingData :
+  T extends 'WELLNESS_SPA' ? WellnessBookingData :
+  T extends 'BARBERSHOP' ? BarbershopBookingData :
+  T extends 'FITNESS_SPORT' ? FitnessBookingData :
+  never;

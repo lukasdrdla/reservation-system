@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/prisma';
 import { NextRequest, NextResponse } from 'next/server';
 
 export async function GET(request: NextRequest) {
@@ -12,21 +12,23 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const supabase = await createClient();
+  try {
+    const services = await prisma.service.findMany({
+      where: {
+        tenantId,
+        active: true,
+      },
+      orderBy: {
+        name: 'asc',
+      },
+    });
 
-  const { data: services, error } = await supabase
-    .from('services')
-    .select('*')
-    .eq('tenant_id', tenantId)
-    .eq('active', true)
-    .order('name');
-
-  if (error) {
+    return NextResponse.json(services);
+  } catch (error) {
+    console.error('Services fetch error:', error);
     return NextResponse.json(
       { error: 'Chyba při načítání služeb' },
       { status: 500 }
     );
   }
-
-  return NextResponse.json(services || []);
 }

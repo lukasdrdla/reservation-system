@@ -4,12 +4,13 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Card, CardHeader, CardTitle, Calendar, TimeSlots, Button } from '@/components/ui';
 import { BookingForm } from '@/components/forms/BookingForm';
+import { SpecialistSelector } from '@/components/booking/SpecialistSelector';
 import type { Tenant, Service, TimeSlot, BookingFormData } from '@/lib/types';
 import { formatPrice } from '@/lib/utils';
 import { Loader2, Clock, Banknote, CheckCircle2 } from 'lucide-react';
 import { format } from 'date-fns';
 
-type Step = 'service' | 'datetime' | 'form';
+type Step = 'service' | 'specialist' | 'datetime' | 'form';
 
 export default function BookingPage() {
   const params = useParams();
@@ -25,6 +26,7 @@ export default function BookingPage() {
   // Booking state
   const [step, setStep] = useState<Step>('service');
   const [selectedService, setSelectedService] = useState<Service | null>(null);
+  const [selectedSpecialist, setSelectedSpecialist] = useState<{ id: string; name: string } | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedTime, setSelectedTime] = useState<string | null>(null);
 
@@ -65,9 +67,14 @@ export default function BookingPage() {
       setSlotsLoading(true);
       try {
         const dateStr = format(selectedDate, 'yyyy-MM-dd');
-        const res = await fetch(
-          `/api/availability?tenant_id=${tenant.id}&date=${dateStr}&service_id=${selectedService.id}`
-        );
+        let url = `/api/availability?tenant_id=${tenant.id}&date=${dateStr}&service_id=${selectedService.id}`;
+
+        // If specialist is selected, filter availability by specialist
+        if (selectedSpecialist) {
+          url += `&specialist_id=${selectedSpecialist.id}`;
+        }
+
+        const res = await fetch(url);
         const data = await res.json();
         setSlots(data);
       } catch (error) {
@@ -78,10 +85,24 @@ export default function BookingPage() {
       }
     }
     loadSlots();
-  }, [tenant, selectedService, selectedDate]);
+  }, [tenant, selectedService, selectedDate, selectedSpecialist]);
 
   const handleServiceSelect = (service: Service) => {
     setSelectedService(service);
+    setSelectedSpecialist(null);
+    setSelectedDate(null);
+    setSelectedTime(null);
+
+    // Skip specialist step for RESTAURANT category
+    if (tenant?.category === 'RESTAURANT') {
+      setStep('datetime');
+    } else {
+      setStep('specialist');
+    }
+  };
+
+  const handleSpecialistSelect = (specialist: { id: string; name: string } | null) => {
+    setSelectedSpecialist(specialist);
     setSelectedDate(null);
     setSelectedTime(null);
     setStep('datetime');
@@ -120,9 +141,18 @@ export default function BookingPage() {
       setStep('datetime');
       setSelectedTime(null);
     } else if (step === 'datetime') {
+      // Go back to specialist or service depending on category
+      if (tenant?.category === 'RESTAURANT') {
+        setStep('service');
+        setSelectedService(null);
+      } else {
+        setStep('specialist');
+      }
+      setSelectedDate(null);
+    } else if (step === 'specialist') {
       setStep('service');
       setSelectedService(null);
-      setSelectedDate(null);
+      setSelectedSpecialist(null);
     }
   };
 
@@ -167,9 +197,15 @@ export default function BookingPage() {
         <div className="flex items-center justify-center gap-2 mb-8">
           <StepIndicator number={1} label="Služba" active={step === 'service'} completed={step !== 'service'} />
           <div className="w-8 h-0.5 bg-[var(--border)]" />
-          <StepIndicator number={2} label="Termín" active={step === 'datetime'} completed={step === 'form'} />
+          {tenant.category !== 'RESTAURANT' && (
+            <>
+              <StepIndicator number={2} label="Specialista" active={step === 'specialist'} completed={step === 'datetime' || step === 'form'} />
+              <div className="w-8 h-0.5 bg-[var(--border)]" />
+            </>
+          )}
+          <StepIndicator number={tenant.category === 'RESTAURANT' ? 2 : 3} label="Termín" active={step === 'datetime'} completed={step === 'form'} />
           <div className="w-8 h-0.5 bg-[var(--border)]" />
-          <StepIndicator number={3} label="Údaje" active={step === 'form'} completed={false} />
+          <StepIndicator number={tenant.category === 'RESTAURANT' ? 3 : 4} label="Údaje" active={step === 'form'} completed={false} />
         </div>
 
         {/* Content */}
@@ -215,12 +251,39 @@ export default function BookingPage() {
             </div>
           )}
 
+          {step === 'specialist' && selectedService && tenant && (
+            <div className="space-y-6">
+              <CardHeader>
+                <CardTitle>
+                  {tenant.category === 'WELLNESS_SPA' && 'Vyberte terapeuta'}
+                  {tenant.category === 'BARBERSHOP' && 'Vyberte kadeřníka'}
+                  {tenant.category === 'FITNESS_SPORT' && 'Vyberte trenéra'}
+                </CardTitle>
+                <p className="text-sm text-[var(--text-muted)]">
+                  {selectedService.name} ({selectedService.duration} min)
+                </p>
+              </CardHeader>
+
+              <SpecialistSelector
+                tenant={tenant}
+                onSelect={handleSpecialistSelect}
+              />
+
+              <div className="flex justify-start">
+                <Button variant="ghost" onClick={handleBack}>
+                  Zpět na výběr služby
+                </Button>
+              </div>
+            </div>
+          )}
+
           {step === 'datetime' && selectedService && (
             <div className="space-y-6">
               <CardHeader>
                 <CardTitle>Vyberte termín</CardTitle>
                 <p className="text-sm text-[var(--text-muted)]">
                   {selectedService.name} ({selectedService.duration} min)
+                  {selectedSpecialist && ` • ${selectedSpecialist.name}`}
                 </p>
               </CardHeader>
 
@@ -267,7 +330,8 @@ export default function BookingPage() {
                 service={selectedService}
                 date={selectedDate}
                 time={selectedTime}
-                tenantId={tenant.id}
+                tenant={tenant}
+                selectedSpecialist={selectedSpecialist}
                 onSubmit={handleBookingSubmit}
                 onBack={handleBack}
               />

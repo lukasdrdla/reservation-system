@@ -2,9 +2,9 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
+import { signOut } from 'next-auth/react';
 import { cn } from '@/lib/utils';
 import { LayoutDashboard, Calendar, Settings, LogOut, Menu, X } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
 import { useState } from 'react';
 
 const navItems = [
@@ -23,10 +23,7 @@ export function Sidebar({ tenantName }: SidebarProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const handleLogout = async () => {
-    const supabase = createClient();
-    await supabase.auth.signOut();
-    router.push('/admin/login');
-    router.refresh();
+    await signOut({ callbackUrl: '/admin/login' });
   };
 
   const NavContent = () => (

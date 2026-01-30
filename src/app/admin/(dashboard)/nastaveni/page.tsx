@@ -2,22 +2,30 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { Card, CardHeader, CardTitle, CardDescription, Button, Input } from '@/components/ui';
-import { createClient } from '@/lib/supabase/client';
-import type { Tenant, Service, WorkingHours } from '@/lib/types';
-import { Loader2, Plus, Trash2, Save, Building, Palette, Clock, Briefcase } from 'lucide-react';
+import type { Tenant, Service, WorkingHours, RestaurantData, WellnessData, BarbershopData, FitnessData } from '@/lib/types';
+import { Loader2, Plus, Trash2, Save, Building, Clock, Briefcase, Grid3x3 } from 'lucide-react';
 import { formatPrice } from '@/lib/utils';
+import { getCategoryLabel } from '@/lib/categories';
+import {
+  RestaurantSettings,
+  WellnessSettings,
+  BarbershopSettings,
+  FitnessSettings,
+} from '@/components/admin/settings';
 
 const DAY_NAMES = ['Neděle', 'Pondělí', 'Úterý', 'Středa', 'Čtvrtek', 'Pátek', 'Sobota'];
 
 export default function SettingsPage() {
   const router = useRouter();
+  const { data: session, status } = useSession();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [services, setServices] = useState<Service[]>([]);
   const [workingHours, setWorkingHours] = useState<WorkingHours[]>([]);
-  const [activeTab, setActiveTab] = useState<'profile' | 'services' | 'hours'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'services' | 'hours' | 'category'>('profile');
 
   // Form states
   const [profileForm, setProfileForm] = useState({
@@ -35,119 +43,182 @@ export default function SettingsPage() {
   });
 
   const loadData = async () => {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    if (status === 'loading') return;
 
-    if (!user) {
+    if (status === 'unauthenticated' || !session?.user?.tenantId) {
       router.push('/admin/login');
       return;
     }
 
-    const { data: tenantData } = await supabase
-      .from('tenants')
-      .select('*')
-      .eq('email', user.email)
-      .single();
+    try {
+      // Fetch tenant data
+      const tenantRes = await fetch('/api/tenant/me');
+      if (!tenantRes.ok) {
+        setLoading(false);
+        return;
+      }
+      const tenantData = await tenantRes.json();
 
-    if (!tenantData) {
+      setTenant(tenantData);
+      setProfileForm({
+        name: tenantData.name,
+        email: tenantData.email,
+        phone: tenantData.phone || '',
+        primary_color: tenantData.primary_color || '#0066FF',
+      });
+
+      // Fetch services and working hours
+      const [servicesRes, hoursRes] = await Promise.all([
+        fetch(`/api/services?tenant_id=${tenantData.id}`),
+        fetch(`/api/working-hours?tenant_id=${tenantData.id}`),
+      ]);
+
+      const servicesData = await servicesRes.json();
+      const hoursData = await hoursRes.json();
+
+      setServices(servicesData || []);
+      setWorkingHours(hoursData || []);
+    } catch (error) {
+      console.error('Error loading data:', error);
+    } finally {
       setLoading(false);
-      return;
     }
-
-    setTenant(tenantData);
-    setProfileForm({
-      name: tenantData.name,
-      email: tenantData.email,
-      phone: tenantData.phone || '',
-      primary_color: tenantData.primary_color || '#0066FF',
-    });
-
-    const [servicesRes, hoursRes] = await Promise.all([
-      supabase.from('services').select('*').eq('tenant_id', tenantData.id).order('name'),
-      supabase.from('working_hours').select('*').eq('tenant_id', tenantData.id).order('day_of_week'),
-    ]);
-
-    setServices(servicesRes.data || []);
-    setWorkingHours(hoursRes.data || []);
-    setLoading(false);
   };
 
   useEffect(() => {
-    loadData();
-  }, []);
+    if (status !== 'loading') {
+      loadData();
+    }
+  }, [status, session]);
 
   const handleSaveProfile = async () => {
     if (!tenant) return;
     setSaving(true);
-    const supabase = createClient();
 
-    await supabase
-      .from('tenants')
-      .update({
-        name: profileForm.name,
-        phone: profileForm.phone || null,
-        primary_color: profileForm.primary_color,
-      })
-      .eq('id', tenant.id);
+    try {
+      await fetch('/api/tenant/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: profileForm.name,
+          phone: profileForm.phone || null,
+          primary_color: profileForm.primary_color,
+        }),
+      });
 
-    setSaving(false);
-    router.refresh();
+      await loadData();
+    } catch (error) {
+      console.error('Error saving profile:', error);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleAddService = async () => {
     if (!tenant || !newService.name) return;
     setSaving(true);
-    const supabase = createClient();
 
-    await supabase.from('services').insert({
-      tenant_id: tenant.id,
-      name: newService.name,
-      duration: newService.duration,
-      price: newService.price,
-      description: newService.description || null,
-      active: true,
-    });
+    try {
+      await fetch('/api/services', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tenant_id: tenant.id,
+          name: newService.name,
+          duration: newService.duration,
+          price: newService.price,
+          description: newService.description || null,
+          active: true,
+        }),
+      });
 
-    setNewService({ name: '', duration: 60, price: 0, description: '' });
-    await loadData();
-    setSaving(false);
+      setNewService({ name: '', duration: 60, price: 0, description: '' });
+      await loadData();
+    } catch (error) {
+      console.error('Error adding service:', error);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleDeleteService = async (id: string) => {
     if (!confirm('Opravdu chcete smazat tuto službu?')) return;
-    const supabase = createClient();
-    await supabase.from('services').delete().eq('id', id);
-    await loadData();
+
+    try {
+      await fetch(`/api/services/${id}`, {
+        method: 'DELETE',
+      });
+      await loadData();
+    } catch (error) {
+      console.error('Error deleting service:', error);
+    }
   };
 
   const handleToggleService = async (id: string, active: boolean) => {
-    const supabase = createClient();
-    await supabase.from('services').update({ active: !active }).eq('id', id);
-    await loadData();
+    try {
+      await fetch(`/api/services/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: !active }),
+      });
+      await loadData();
+    } catch (error) {
+      console.error('Error toggling service:', error);
+    }
   };
 
   const handleSaveWorkingHours = async (dayOfWeek: number, startTime: string, endTime: string, isWorking: boolean) => {
     if (!tenant) return;
-    const supabase = createClient();
 
-    const existing = workingHours.find((h) => h.day_of_week === dayOfWeek);
+    try {
+      const existing = workingHours.find((h) => h.day_of_week === dayOfWeek);
 
-    if (existing) {
-      await supabase
-        .from('working_hours')
-        .update({ start_time: startTime, end_time: endTime, is_working: isWorking })
-        .eq('id', existing.id);
-    } else {
-      await supabase.from('working_hours').insert({
-        tenant_id: tenant.id,
-        day_of_week: dayOfWeek,
-        start_time: startTime,
-        end_time: endTime,
-        is_working: isWorking,
-      });
+      if (existing) {
+        await fetch(`/api/working-hours/${existing.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            start_time: startTime,
+            end_time: endTime,
+            is_working: isWorking,
+          }),
+        });
+      } else {
+        await fetch('/api/working-hours', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tenant_id: tenant.id,
+            day_of_week: dayOfWeek,
+            start_time: startTime,
+            end_time: endTime,
+            is_working: isWorking,
+          }),
+        });
+      }
+
+      await loadData();
+    } catch (error) {
+      console.error('Error saving working hours:', error);
     }
+  };
 
-    await loadData();
+  const handleSaveCategoryData = async (data: RestaurantData | WellnessData | BarbershopData | FitnessData) => {
+    if (!tenant) return;
+
+    try {
+      await fetch('/api/tenant/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          category_data: data,
+        }),
+      });
+
+      await loadData();
+    } catch (error) {
+      console.error('Error saving category data:', error);
+    }
   };
 
   if (loading) {
@@ -179,6 +250,7 @@ export default function SettingsPage() {
           { id: 'profile', label: 'Profil', icon: Building },
           { id: 'services', label: 'Služby', icon: Briefcase },
           { id: 'hours', label: 'Pracovní hodiny', icon: Clock },
+          { id: 'category', label: 'Kategorie', icon: Grid3x3 },
         ].map((tab) => (
           <button
             key={tab.id}
@@ -351,6 +423,44 @@ export default function SettingsPage() {
                 />
               );
             })}
+          </div>
+        </Card>
+      )}
+
+      {/* Category Tab */}
+      {activeTab === 'category' && tenant && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Nastavení kategorie</CardTitle>
+            <CardDescription>
+              Typ podniku: {getCategoryLabel(tenant.category)}
+            </CardDescription>
+          </CardHeader>
+          <div>
+            {tenant.category === 'RESTAURANT' && (
+              <RestaurantSettings
+                data={tenant.category_data as RestaurantData | null}
+                onSave={handleSaveCategoryData}
+              />
+            )}
+            {tenant.category === 'WELLNESS_SPA' && (
+              <WellnessSettings
+                data={tenant.category_data as WellnessData | null}
+                onSave={handleSaveCategoryData}
+              />
+            )}
+            {tenant.category === 'BARBERSHOP' && (
+              <BarbershopSettings
+                data={tenant.category_data as BarbershopData | null}
+                onSave={handleSaveCategoryData}
+              />
+            )}
+            {tenant.category === 'FITNESS_SPORT' && (
+              <FitnessSettings
+                data={tenant.category_data as FitnessData | null}
+                onSave={handleSaveCategoryData}
+              />
+            )}
           </div>
         </Card>
       )}

@@ -1,5 +1,7 @@
 import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/lib/auth';
+import { prisma } from '@/lib/prisma';
 import { Sidebar } from '@/components/admin';
 
 export default async function AdminLayout({
@@ -7,25 +9,24 @@ export default async function AdminLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const supabase = await createClient();
+  const session = await getServerSession(authOptions);
 
-  const { data: { user } } = await supabase.auth.getUser();
-
-  if (!user) {
+  if (!session?.user) {
     redirect('/admin/login');
   }
 
   // Načíst tenant info pro aktuálního uživatele
-  // Pro MVP předpokládáme, že email uživatele odpovídá emailu tenanta
-  const { data: tenant } = await supabase
-    .from('tenants')
-    .select('name')
-    .eq('email', user.email)
-    .single();
+  // tenantId je uložen v JWT tokenu
+  const tenant = session.user.tenantId
+    ? await prisma.tenant.findUnique({
+        where: { id: session.user.tenantId },
+        select: { name: true },
+      })
+    : null;
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <Sidebar tenantName={tenant?.name} />
+      <Sidebar tenantName={tenant?.name || session.user.name || undefined} />
       <div className="lg:pl-64">
         <main className="p-4 lg:p-8 pt-20 lg:pt-8">
           {children}

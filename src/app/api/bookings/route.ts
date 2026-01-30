@@ -1,7 +1,69 @@
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/prisma';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/lib/auth';
 import { NextRequest, NextResponse } from 'next/server';
 import type { BookingFormData } from '@/lib/types';
 import { sendBookingConfirmation, sendBookingNotification } from '@/lib/email';
+
+export async function GET(request: NextRequest) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user?.tenantId) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const searchParams = request.nextUrl.searchParams;
+  const dateFrom = searchParams.get('date_from');
+  const dateTo = searchParams.get('date_to');
+  const status = searchParams.get('status');
+
+  try {
+    const bookings = await prisma.booking.findMany({
+      where: {
+        tenantId: session.user.tenantId,
+        ...(dateFrom && { date: { gte: new Date(dateFrom) } }),
+        ...(dateTo && { date: { lte: new Date(dateTo) } }),
+        ...(status && status !== 'all' && { status: status.toUpperCase() as any }),
+      },
+      include: {
+        service: true,
+      },
+      orderBy: [
+        { date: 'desc' },
+        { startTime: 'desc' },
+      ],
+    });
+
+    // Konverze pro kompatibilitu s frontendem
+    const convertedBookings = bookings.map((booking) => ({
+      ...booking,
+      customer_name: booking.customerName,
+      customer_email: booking.customerEmail,
+      customer_phone: booking.customerPhone,
+      start_time: booking.startTime,
+      end_time: booking.endTime,
+      tenant_id: booking.tenantId,
+      service_id: booking.serviceId,
+      created_at: booking.createdAt.toISOString(),
+      status: booking.status.toLowerCase(),
+      service: booking.service
+        ? {
+            ...booking.service,
+            tenant_id: booking.service.tenantId,
+            service_data: booking.service.serviceData,
+            created_at: booking.service.createdAt.toISOString(),
+          }
+        : undefined,
+    }));
+
+    return NextResponse.json(convertedBookings);
+  } catch (error) {
+    console.error('Bookings fetch error:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch bookings' },
+      { status: 500 }
+    );
+  }
+}
 
 export async function POST(request: NextRequest) {
   const body = await request.json();
@@ -25,103 +87,134 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const supabase = await createClient();
+  try {
+    // Načíst tenant pro email
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenant_id },
+    });
 
-  // Načíst tenant pro email
-  const { data: tenant, error: tenantError } = await supabase
-    .from('tenants')
-    .select('*')
-    .eq('id', tenant_id)
-    .single();
+    if (!tenant) {
+      return NextResponse.json(
+        { error: 'Tenant nenalezen' },
+        { status: 404 }
+      );
+    }
 
-  if (tenantError || !tenant) {
-    return NextResponse.json(
-      { error: 'Tenant nenalezen' },
-      { status: 404 }
-    );
-  }
+    // Načíst službu (celá data pro email)
+    const service = await prisma.service.findUnique({
+      where: { id: bookingData.service_id },
+    });
 
-  // Načíst službu (celá data pro email)
-  const { data: service, error: serviceError } = await supabase
-    .from('services')
-    .select('*')
-    .eq('id', bookingData.service_id)
-    .single();
+    if (!service) {
+      return NextResponse.json(
+        { error: 'Služba nenalezena' },
+        { status: 404 }
+      );
+    }
 
-  if (serviceError || !service) {
-    return NextResponse.json(
-      { error: 'Služba nenalezena' },
-      { status: 404 }
-    );
-  }
+    // Vypočítat koncový čas
+    const endTime = calculateEndTime(bookingData.start_time, service.duration);
 
-  // Vypočítat koncový čas
-  const endTime = calculateEndTime(bookingData.start_time, service.duration);
+    // Kontrola dostupnosti termínu (double-check)
+    const existingBookings = await prisma.booking.findMany({
+      where: {
+        tenantId: tenant_id,
+        date: new Date(bookingData.date),
+        status: { not: 'CANCELLED' },
+        OR: [
+          {
+            AND: [
+              { startTime: { lte: bookingData.start_time } },
+              { endTime: { gt: bookingData.start_time } },
+            ],
+          },
+          {
+            AND: [
+              { startTime: { lt: endTime } },
+              { endTime: { gte: endTime } },
+            ],
+          },
+          {
+            AND: [
+              { startTime: { lte: bookingData.start_time } },
+              { endTime: { gte: endTime } },
+            ],
+          },
+        ],
+      },
+    });
 
-  // Kontrola dostupnosti termínu (double-check)
-  const { data: existingBookings } = await supabase
-    .from('bookings')
-    .select('id')
-    .eq('tenant_id', tenant_id)
-    .eq('date', bookingData.date)
-    .neq('status', 'cancelled')
-    .or(`and(start_time.lte.${bookingData.start_time},end_time.gt.${bookingData.start_time}),and(start_time.lt.${endTime},end_time.gte.${endTime})`);
+    if (existingBookings.length > 0) {
+      return NextResponse.json(
+        { error: 'Tento termín již není dostupný' },
+        { status: 409 }
+      );
+    }
 
-  if (existingBookings && existingBookings.length > 0) {
-    return NextResponse.json(
-      { error: 'Tento termín již není dostupný' },
-      { status: 409 }
-    );
-  }
+    // Vytvořit rezervaci
+    const booking = await prisma.booking.create({
+      data: {
+        tenantId: tenant_id,
+        serviceId: bookingData.service_id,
+        customerName: bookingData.customer_name,
+        customerEmail: bookingData.customer_email,
+        customerPhone: bookingData.customer_phone,
+        date: new Date(bookingData.date),
+        startTime: bookingData.start_time,
+        endTime: endTime,
+        note: bookingData.note || null,
+        status: 'CONFIRMED',
+      },
+    });
 
-  // Vytvořit rezervaci
-  const { data: booking, error: bookingError } = await supabase
-    .from('bookings')
-    .insert({
-      tenant_id,
-      service_id: bookingData.service_id,
-      customer_name: bookingData.customer_name,
-      customer_email: bookingData.customer_email,
-      customer_phone: bookingData.customer_phone,
-      date: bookingData.date,
-      start_time: bookingData.start_time,
-      end_time: endTime,
-      note: bookingData.note || null,
-      status: 'confirmed',
-    })
-    .select()
-    .single();
+    // Odeslat emaily (async, nečekáme na výsledek)
+    const emailData = {
+      booking: {
+        ...booking,
+        customer_email: booking.customerEmail,
+        customer_name: booking.customerName,
+        customer_phone: booking.customerPhone,
+        start_time: booking.startTime,
+        end_time: booking.endTime,
+      },
+      service: {
+        ...service,
+        tenant_id: service.tenantId,
+        service_id: service.id,
+      },
+      tenant: {
+        ...tenant,
+        logo_url: tenant.logoUrl,
+        primary_color: tenant.primaryColor,
+      },
+    };
 
-  if (bookingError) {
-    console.error('Booking error:', bookingError);
+    // Potvrzení zákazníkovi
+    sendBookingConfirmation(emailData).then((result) => {
+      if (result.success) {
+        console.log('Confirmation email sent to:', booking.customerEmail);
+      } else {
+        console.error('Failed to send confirmation email:', result.error);
+      }
+    });
+
+    // Notifikace provozovateli
+    sendBookingNotification(emailData).then((result) => {
+      if (result.success) {
+        console.log('Notification email sent to:', tenant.email);
+      } else {
+        console.error('Failed to send notification email:', result.error);
+      }
+    });
+
+    return NextResponse.json(booking, { status: 201 });
+  } catch (error) {
+    console.error('Booking error:', error);
     return NextResponse.json(
       { error: 'Chyba při vytváření rezervace' },
       { status: 500 }
     );
   }
-
-  // Odeslat emaily (async, nečekáme na výsledek)
-  const emailData = { booking, service, tenant };
-
-  // Potvrzení zákazníkovi
-  sendBookingConfirmation(emailData).then((result) => {
-    if (result.success) {
-      console.log('Confirmation email sent to:', booking.customer_email);
-    } else {
-      console.error('Failed to send confirmation email:', result.error);
-    }
-  });
-
-  // Notifikace provozovateli
-  sendBookingNotification(emailData).then((result) => {
-    if (result.success) {
-      console.log('Notification email sent to:', tenant.email);
-    } else {
-      console.error('Failed to send notification email:', result.error);
-    }
-  });
-
-  return NextResponse.json(booking, { status: 201 });
 }
 
 function calculateEndTime(startTime: string, durationMinutes: number): string {

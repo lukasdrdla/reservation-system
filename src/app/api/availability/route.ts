@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/prisma';
 import { NextRequest, NextResponse } from 'next/server';
 import { generateTimeSlots, getDayOfWeek } from '@/lib/utils';
 
@@ -15,56 +15,84 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const date = new Date(dateStr);
-  const dayOfWeek = getDayOfWeek(date);
+  try {
+    const date = new Date(dateStr);
+    const dayOfWeek = getDayOfWeek(date);
 
-  const supabase = await createClient();
+    // Načíst službu pro délku trvání
+    const service = await prisma.service.findUnique({
+      where: { id: serviceId },
+      select: { duration: true },
+    });
 
-  // Načíst službu pro délku trvání
-  const { data: service, error: serviceError } = await supabase
-    .from('services')
-    .select('duration')
-    .eq('id', serviceId)
-    .single();
+    if (!service) {
+      return NextResponse.json(
+        { error: 'Služba nenalezena' },
+        { status: 404 }
+      );
+    }
 
-  if (serviceError || !service) {
+    // Načíst pracovní hodiny pro daný den
+    const workingHours = await prisma.workingHours.findUnique({
+      where: {
+        tenantId_dayOfWeek: {
+          tenantId,
+          dayOfWeek,
+        },
+      },
+    });
+
+    // Načíst existující rezervace pro daný den
+    const bookings = await prisma.booking.findMany({
+      where: {
+        tenantId,
+        date: new Date(dateStr),
+        status: { not: 'CANCELLED' },
+      },
+    });
+
+    // Načíst blokované termíny
+    const blockedTimes = await prisma.blockedTime.findMany({
+      where: {
+        tenantId,
+        date: new Date(dateStr),
+      },
+    });
+
+    // Konverze pro kompatibilitu s generateTimeSlots
+    const convertedWorkingHours = workingHours
+      ? {
+          start_time: workingHours.startTime,
+          end_time: workingHours.endTime,
+          is_working: workingHours.isWorking,
+        }
+      : null;
+
+    const convertedBookings = bookings.map((b) => ({
+      start_time: b.startTime,
+      end_time: b.endTime,
+    }));
+
+    const convertedBlockedTimes = blockedTimes.map((bt) => ({
+      start_time: bt.startTime,
+      end_time: bt.endTime,
+    }));
+
+    // Vygenerovat dostupné sloty
+    const slots = generateTimeSlots(
+      convertedWorkingHours,
+      service.duration,
+      convertedBookings,
+      convertedBlockedTimes,
+      date
+    );
+
+    return NextResponse.json(slots);
+  } catch (error) {
+    console.error('Availability fetch error:', error);
     return NextResponse.json(
-      { error: 'Služba nenalezena' },
-      { status: 404 }
+      { error: 'Chyba při načítání dostupnosti' },
+      { status: 500 }
     );
   }
-
-  // Načíst pracovní hodiny pro daný den
-  const { data: workingHours } = await supabase
-    .from('working_hours')
-    .select('*')
-    .eq('tenant_id', tenantId)
-    .eq('day_of_week', dayOfWeek)
-    .single();
-
-  // Načíst existující rezervace pro daný den
-  const { data: bookings } = await supabase
-    .from('bookings')
-    .select('*')
-    .eq('tenant_id', tenantId)
-    .eq('date', dateStr)
-    .neq('status', 'cancelled');
-
-  // Načíst blokované termíny
-  const { data: blockedTimes } = await supabase
-    .from('blocked_times')
-    .select('*')
-    .eq('tenant_id', tenantId)
-    .eq('date', dateStr);
-
-  // Vygenerovat dostupné sloty
-  const slots = generateTimeSlots(
-    workingHours || null,
-    service.duration,
-    bookings || [],
-    blockedTimes || [],
-    date
-  );
-
-  return NextResponse.json(slots);
 }

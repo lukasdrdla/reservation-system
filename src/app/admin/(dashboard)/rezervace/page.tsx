@@ -1,81 +1,75 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { BookingsTable } from '@/components/admin';
 import { Card, Button, Input } from '@/components/ui';
-import { createClient } from '@/lib/supabase/client';
-import type { Booking, Service, Tenant } from '@/lib/types';
-import { Search, Filter, Loader2 } from 'lucide-react';
+import type { Booking, Service } from '@/lib/types';
+import { Search, Loader2 } from 'lucide-react';
 import { format, subDays, addDays } from 'date-fns';
 
 type StatusFilter = 'all' | 'confirmed' | 'completed' | 'cancelled';
 
 export default function ReservationsPage() {
   const router = useRouter();
+  const { data: session, status } = useSession();
   const [loading, setLoading] = useState(true);
   const [bookings, setBookings] = useState<(Booking & { service?: Service })[]>([]);
-  const [tenant, setTenant] = useState<Tenant | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [dateFrom, setDateFrom] = useState(format(subDays(new Date(), 7), 'yyyy-MM-dd'));
   const [dateTo, setDateTo] = useState(format(addDays(new Date(), 30), 'yyyy-MM-dd'));
   const [searchQuery, setSearchQuery] = useState('');
 
   const loadData = async () => {
-    setLoading(true);
-    const supabase = createClient();
-
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
+    if (status === 'loading') return;
+    if (status === 'unauthenticated') {
       router.push('/admin/login');
       return;
     }
 
-    // Získat tenant
-    const { data: tenantData } = await supabase
-      .from('tenants')
-      .select('*')
-      .eq('email', user.email)
-      .single();
+    setLoading(true);
 
-    if (!tenantData) {
+    try {
+      const params = new URLSearchParams({
+        date_from: dateFrom,
+        date_to: dateTo,
+        ...(statusFilter !== 'all' && { status: statusFilter }),
+      });
+
+      const response = await fetch(`/api/bookings?${params}`);
+      if (!response.ok) throw new Error('Failed to fetch bookings');
+
+      const data = await response.json();
+      setBookings(data);
+    } catch (error) {
+      console.error('Error loading bookings:', error);
+    } finally {
       setLoading(false);
-      return;
     }
-
-    setTenant(tenantData);
-
-    // Načíst rezervace
-    let query = supabase
-      .from('bookings')
-      .select('*, service:services(*)')
-      .eq('tenant_id', tenantData.id)
-      .gte('date', dateFrom)
-      .lte('date', dateTo)
-      .order('date', { ascending: false })
-      .order('start_time', { ascending: false });
-
-    if (statusFilter !== 'all') {
-      query = query.eq('status', statusFilter);
-    }
-
-    const { data: bookingsData } = await query;
-    setBookings(bookingsData || []);
-    setLoading(false);
   };
 
   useEffect(() => {
     loadData();
-  }, [statusFilter, dateFrom, dateTo]);
+  }, [statusFilter, dateFrom, dateTo, status]);
 
-  const handleStatusChange = async (id: string, status: 'confirmed' | 'cancelled' | 'completed') => {
-    const supabase = createClient();
-    await supabase
-      .from('bookings')
-      .update({ status })
-      .eq('id', id);
+  const handleStatusChange = async (
+    id: string,
+    status: 'confirmed' | 'cancelled' | 'completed'
+  ) => {
+    try {
+      const response = await fetch(`/api/bookings/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: status.toUpperCase() }),
+      });
 
-    loadData();
+      if (!response.ok) throw new Error('Failed to update booking');
+
+      loadData();
+    } catch (error) {
+      console.error('Error updating booking:', error);
+    }
   };
 
   const filteredBookings = bookings.filter((booking) => {
@@ -88,6 +82,14 @@ export default function ReservationsPage() {
       booking.service?.name.toLowerCase().includes(query)
     );
   });
+
+  if (status === 'loading') {
+    return (
+      <div className="flex justify-center py-12">
+        <Loader2 className="w-8 h-8 animate-spin text-[var(--primary)]" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

@@ -2,9 +2,9 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Button, Input, Card, CardHeader, CardTitle } from '@/components/ui';
-import { Mail, Lock, Loader2 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
+import { signIn } from 'next-auth/react';
+import { Button, Input, Card } from '@/components/ui';
+import { Mail, Lock } from 'lucide-react';
 
 export default function AdminLoginPage() {
   const router = useRouter();
@@ -21,13 +21,13 @@ export default function AdminLoginPage() {
     setLoading(true);
 
     try {
-      const supabase = createClient();
-      const { error: authError } = await supabase.auth.signInWithPassword({
+      const result = await signIn('credentials', {
         email: formData.email,
         password: formData.password,
+        redirect: false,
       });
 
-      if (authError) {
+      if (result?.error) {
         setError('Nesprávný email nebo heslo');
         return;
       }

@@ -3,14 +3,33 @@
 import { useState } from 'react';
 import { Button, Input } from '@/components/ui';
 import { User, Mail, Phone, MessageSquare } from 'lucide-react';
-import type { BookingFormData, Service } from '@/lib/types';
+import type {
+  BookingFormData,
+  Service,
+  Tenant,
+  RestaurantData,
+  WellnessData,
+  BarbershopData,
+  FitnessData,
+  RestaurantBookingData,
+  WellnessBookingData,
+  BarbershopBookingData,
+  FitnessBookingData,
+} from '@/lib/types';
 import { formatPrice, formatDate, formatTime } from '@/lib/utils';
+import {
+  RestaurantBooking,
+  WellnessBooking,
+  BarbershopBooking,
+  FitnessBooking,
+} from '@/components/booking';
 
 interface BookingFormProps {
   service: Service;
   date: Date;
   time: string;
-  tenantId: string;
+  tenant: Tenant;
+  selectedSpecialist?: { id: string; name: string } | null;
   onSubmit: (data: BookingFormData) => Promise<void>;
   onBack: () => void;
 }
@@ -19,7 +38,8 @@ export function BookingForm({
   service,
   date,
   time,
-  tenantId,
+  tenant,
+  selectedSpecialist,
   onSubmit,
   onBack,
 }: BookingFormProps) {
@@ -31,6 +51,13 @@ export function BookingForm({
     customer_phone: '',
     note: '',
   });
+  const [categoryData, setCategoryData] = useState<
+    | RestaurantBookingData
+    | WellnessBookingData
+    | BarbershopBookingData
+    | FitnessBookingData
+    | null
+  >(null);
 
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
@@ -49,6 +76,11 @@ export function BookingForm({
       newErrors.customer_phone = 'Zadejte váš telefon';
     } else if (!/^[0-9\s+()-]{9,}$/.test(formData.customer_phone.replace(/\s/g, ''))) {
       newErrors.customer_phone = 'Zadejte platné telefonní číslo';
+    }
+
+    // Validate category-specific data
+    if (!categoryData) {
+      newErrors.category_data = 'Vyplňte všechna povinná pole';
     }
 
     setErrors(newErrors);
@@ -70,6 +102,7 @@ export function BookingForm({
         customer_email: formData.customer_email,
         customer_phone: formData.customer_phone,
         note: formData.note || undefined,
+        booking_data: categoryData || undefined,
       });
     } catch {
       setErrors({ form: 'Nastala chyba při vytváření rezervace. Zkuste to prosím znovu.' });
@@ -126,6 +159,50 @@ export function BookingForm({
           error={errors.customer_phone}
           required
         />
+
+        {/* Category-specific booking fields */}
+        {tenant.category === 'RESTAURANT' && (
+          <RestaurantBooking
+            restaurantData={(tenant.category_data as RestaurantData) || { tableCount: 10, seatingCapacity: 40 }}
+            selectedDate={date}
+            selectedTime={time}
+            onDataChange={setCategoryData}
+          />
+        )}
+
+        {tenant.category === 'WELLNESS_SPA' && (
+          <WellnessBooking
+            wellnessData={(tenant.category_data as WellnessData) || { roomCount: 3, procedureTypes: ['Masáž', 'Sauna'] }}
+            selectedDate={date}
+            selectedTime={time}
+            selectedTherapist={selectedSpecialist}
+            onDataChange={setCategoryData}
+          />
+        )}
+
+        {tenant.category === 'BARBERSHOP' && (
+          <BarbershopBooking
+            barbershopData={(tenant.category_data as BarbershopData) || { chairCount: 3, stylists: [] }}
+            selectedDate={date}
+            selectedTime={time}
+            selectedStylist={selectedSpecialist}
+            onDataChange={setCategoryData}
+          />
+        )}
+
+        {tenant.category === 'FITNESS_SPORT' && (
+          <FitnessBooking
+            fitnessData={(tenant.category_data as FitnessData) || { trainers: [], activityTypes: ['Osobní trénink', 'Skupinová lekce'] }}
+            selectedDate={date}
+            selectedTime={time}
+            selectedTrainer={selectedSpecialist}
+            onDataChange={setCategoryData}
+          />
+        )}
+
+        {errors.category_data && (
+          <p className="text-sm text-[var(--error)]">{errors.category_data}</p>
+        )}
 
         <div>
           <label
